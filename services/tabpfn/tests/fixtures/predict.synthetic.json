@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "runId": "synthetic-contract-run",
+  "dataHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "featureSchemaVersion": 1,
+  "model": "tabpfn",
+  "featureNames": ["weekday", "minutesToCutoff", "baselineMeals", "confirmedMeals", "activeCustomers", "receivedSourceCount", "pauseIntentCount", "resumeIntentCount", "quantityChangeIntentCount", "unclearSourceCount", "pendingChangeCount", "recentMeanDelta", "recentSameWeekdayDelta", "messageFeaturesAvailable"],
+  "trainRows": [[0, 120, 100, 98, 40, 5, 1, 0, 1, 0, 1, null, null, 1], [1, 120, 100, 99, 40, null, null, null, null, null, null, -2, null, 0]],
+  "targets": [-2, 1],
+  "queryRow": [2, 120, 100, 99, 40, 3, 0, 1, 0, 0, 1, -0.5, null, 1]
+}

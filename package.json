@@ -6,22 +6,67 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit --incremental false",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
+    "test:backend": "node --env-file-if-exists=.env --import tsx scripts/smoke-backend.ts",
+    "db:init": "node --env-file-if-exists=.env --conditions=react-server --import tsx scripts/db-init.ts",
+    "owner:provision": "node --env-file-if-exists=.env --conditions=react-server --import tsx scripts/provision-owner.ts",
+    "seed:demo": "node --env-file-if-exists=.env --conditions=react-server --import tsx scripts/seed-demo.ts",
+    "api:spec": "node --import tsx scripts/api-spec.ts",
+    "test:ai:contract": "vitest run tests/contracts/ai-backboard.test.ts tests/unit/ai-safety.test.ts tests/unit/ai-persistence.test.ts",
+    "test:ai:live": "node --env-file-if-exists=.env --conditions=react-server --import tsx scripts/ai-live.ts",
+    "test:forecast": "vitest run tests/unit/forecast-client.test.ts tests/unit/forecast-features.test.ts tests/unit/forecast-evaluate.test.ts tests/contracts/history-contracts.test.ts tests/contracts/history-persistence.test.ts",
+    "eval:ai": "vitest run tests/unit/ai-safety.test.ts",
+    "eval:forecast": "node --env-file-if-exists=.env --conditions=react-server --import tsx scripts/phase2-ops.ts evaluate",
+    "privacy:retention": "node --env-file-if-exists=.env --conditions=react-server --import tsx scripts/phase2-ops.ts retention",
+    "runs:reconcile": "node --env-file-if-exists=.env --conditions=react-server --import tsx scripts/phase2-ops.ts"
   },
   "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "@better-auth/mongo-adapter": "1.7.7",
+    "@js-temporal/polyfill": "0.5.1",
+    "@sentry/nextjs": "11.4.0",
+    "@tanstack/react-query": "5.104.1",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "backboard-sdk": "1.5.19",
+    "better-auth": "1.7.7",
+    "class-variance-authority": "^0.7.1",
+    "cn": "^0.4.0",
+    "csv-parse": "7.0.3",
+    "csv-stringify": "6.9.0",
+    "jimp": "^1.6.1",
+    "lucide-react": "^1.51.0",
+    "mongodb": "7.7.0",
     "next": "16.3.8",
+    "next-themes": "^0.4.6",
+    "qrcode": "^1.5.4",
+    "rate-limiter-flexible": "11.2.1",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "server-only": "0.0.1",
+    "shadcn": "^4.21.1",
+    "sonner": "^2.0.8",
+    "tw-animate-css": "^1.4.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24.19.1",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
+    "mongodb-memory-server": "11.3.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "4.23.15",
+    "typescript": "^5",
+    "vitest": "5.0.3"
   },
-  "packageManager": "pnpm@10.33.3"
+  "packageManager": "pnpm@10.33.3",
+  "engines": {
+    "node": ">=24.0.0"
+  }
 }
