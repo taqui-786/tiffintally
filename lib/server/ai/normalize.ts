@@ -6,8 +6,8 @@ export function normalizeDatePhrase(phrase: string | null, sentAt: string, timez
   if (phrase === null) return null;
   const originalDate = Temporal.Instant.from(sentAt).toZonedDateTimeISO(timezone).toPlainDate();
   const clean = phrase.trim().toLowerCase();
-  if (clean === "today") return originalDate.toString();
-  if (clean === "tomorrow") return originalDate.add({ days: 1 }).toString();
+  if (clean === "today" || /^today\b/.test(clean)) return originalDate.toString();
+  if (clean === "tomorrow" || /^tomorrow\b/.test(clean)) return originalDate.add({ days: 1 }).toString();
   // ponytail: only unambiguous ISO dates + today/tomorrow; locale-specific dates require review.
   if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return null;
   try { return Temporal.PlainDate.from(clean).toString(); } catch { return null; }

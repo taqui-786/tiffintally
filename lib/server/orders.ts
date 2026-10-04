@@ -2,7 +2,7 @@ import "server-only";
 import { AppError } from "@/lib/contracts/common";
 import { previewSchema, type OperationInput, type Preview } from "@/lib/contracts/api";
 import { proposalSchema, sourceSchema, type Customer, type DailyOverride, type Plan, type Proposal, type Sheet, type Source } from "@/lib/contracts/records";
-import { applyOperations, assertOperationalDates, assertProposalReady, previewOperations, proposalAffectsDate, transitionProposal, type OrderState } from "@/lib/domain/orders";
+import { applyOperations, assertOperationalDates, assertProposalReady, isAdvisoryField, previewOperations, proposalAffectsDate, transitionProposal, type OrderState } from "@/lib/domain/orders";
 import { assertRevision, found, payloadHash, type Change, type MutationScope, type ReadScope } from "./receipts";
 
 export async function customerFor(scope: ReadScope, customerId: string) {
@@ -162,7 +162,7 @@ export async function previewProposal(input: OperationInput<"previewProposal">, 
   const state = await readOrderState(scope);
   const sheets = await scope.db.collection<Sheet>("sheets").find({ sellerId: scope.seller._id }, { session: scope.session }).toArray();
   assertOperationalDates(proposal.operations, sheets, scope.seller.settings, scope.now);
-  const missingFields = [...proposal.missingFields];
+  const missingFields = proposal.missingFields.filter((field) => !isAdvisoryField(field));
   if (!proposal.operations.length) missingFields.push("operations");
   if (source && (!source.customerId || proposal.operations.some((operation) => operation.customerId !== source.customerId))) missingFields.push("confirmed source customer");
   if (source && !proposal.evidenceSpans.length) missingFields.push("supporting evidence spans");

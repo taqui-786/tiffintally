@@ -7,7 +7,7 @@ import { useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { createAuthClient } from "better-auth/react";
-import { CookingPot, NotebookPen } from "lucide-react";
+import { CookingPot, Loader2, NotebookPen, Sparkles } from "lucide-react";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -118,7 +118,8 @@ function DashboardContent({ auth }: { auth: Me }) {
   const approvedRows = useMemo(() => (day.data?.rows ?? []).filter((row) => row.approvalId !== null), [day.data?.rows]);
   const approvedTotal = useMemo(() => approvedRows.reduce((total, row) => total + row.quantity, 0), [approvedRows]);
   const reviewCount = (sources.data?.items.length ?? 0) + (proposals.data?.items.length ?? 0);
-  const selectedSource = sourceDetail.data?.source ?? sources.data?.items.find((item) => item._id === sourceId);
+  const activeSourceId = consentSourceId ?? sourceId;
+  const selectedSource = (sourceId && sourceDetail.data?.source) ?? sources.data?.items.find((item) => item._id === activeSourceId);
   const forecast = forecasts.data?.items.find((run) => run.runState === "succeeded" && run.result?.status === "available");
 
   async function importSource(event: React.FormEvent<HTMLFormElement>) {
@@ -136,14 +137,25 @@ function DashboardContent({ auth }: { auth: Me }) {
   }
 
   async function analyzeSource() {
-    if (!selectedSource) return;
+    const target = selectedSource;
+    if (!target) return;
     try {
-      await analyzeMutation.mutateAsync({
-        meta: newCommandMeta(), expectedStateRevision: auth.stateRevision, expectedSourceRevision: selectedSource.revision,
-        expectedDraftRevisions: (proposals.data?.items ?? []).filter((proposal) => proposal.sourceId === selectedSource._id).map((proposal) => ({ proposalId: proposal._id, draftRevision: proposal.draftRevision })),
-        consentAcknowledged: true, sourceId: selectedSource._id,
+      const result = await analyzeMutation.mutateAsync({
+        meta: newCommandMeta(), expectedStateRevision: auth.stateRevision, expectedSourceRevision: target.revision,
+        expectedDraftRevisions: (proposals.data?.items ?? []).filter((proposal) => proposal.sourceId === target._id).map((proposal) => ({ proposalId: proposal._id, draftRevision: proposal.draftRevision })),
+        consentAcknowledged: true, sourceId: target._id,
       });
-      toast.success("Analysis started"); setConsentSourceId(null);
+      setConsentSourceId(null);
+      setSourceId(null);
+
+      if (result.state === "failed") {
+        toast.error(result.error?.message || "AI could not extract order changes from this message.");
+      } else if (result.proposalIds && result.proposalIds.length > 0) {
+        toast.success("AI draft ready! Opening for review…");
+        setProposalId(result.proposalIds[0]);
+      } else {
+        toast.info("No actionable order changes detected in message.");
+      }
     } catch (error) { toast.error(safeError(error)); }
   }
 
@@ -178,7 +190,7 @@ function DashboardContent({ auth }: { auth: Me }) {
         </div>
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value)} className="min-w-0 gap-8">
           <p className="-mb-5 text-xs text-muted-foreground lg:hidden">Swipe the section bar for more tabs. With a keyboard, use the arrow keys.</p>
-          <TabsList variant="line" aria-label="Kitchen workspace sections" className="h-auto! w-full justify-start gap-5 overflow-x-auto border-b p-0"><TabsTrigger className="h-12 flex-none px-0" value="overview">Kitchen</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="review">Review{reviewCount ? ` · ${reviewCount}` : ""}</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="billing">Bill book</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="dispatch">Ramesh Mode</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="customers">Customers</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="settings">Settings</TabsTrigger></TabsList>
+          <TabsList variant="line" aria-label="Kitchen workspace sections" className="h-auto! w-full justify-start gap-5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-b p-0"><TabsTrigger className="h-12 flex-none px-0" value="overview">Kitchen</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="review">Review{reviewCount ? ` · ${reviewCount}` : ""}</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="billing">Bill book</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="dispatch">Ramesh Mode</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="customers">Customers</TabsTrigger><TabsTrigger className="h-12 flex-none px-0" value="settings">Settings</TabsTrigger></TabsList>
           <TabsContent value="overview" className="flex flex-col gap-10"><KitchenOverview {...{ day, sources, proposals, customers, approvedTotal, selectedDate, settings, capabilities, forecasts }} onFinalize={() => setFinalizeOpen(true)} finalizePending={finalizeMutation.isPending} onReview={() => setActiveTab("review")} onCustomers={() => setActiveTab("customers")} /><KitchenReview {...{ sources, proposals, customers, selectedDate, setSourceId, setProposalId, capabilities, setConsentSourceId }} timezone={settings.data?.settings.timezone ?? auth.seller.settings.timezone} compact /><Button variant="link" className="min-h-11 self-start px-0" onClick={() => setActiveTab("review")}>Open the full review desk</Button></TabsContent>
           <TabsContent value="review" className="flex flex-col gap-6"><KitchenReview {...{ sources, proposals, customers, selectedDate, setSourceId, setProposalId, capabilities, setConsentSourceId }} timezone={settings.data?.settings.timezone ?? auth.seller.settings.timezone} /></TabsContent>
            <TabsContent value="customers"><CustomersPanel sellerId={sellerId} serviceDate={selectedDate} /></TabsContent>
@@ -203,7 +215,48 @@ function DashboardContent({ auth }: { auth: Me }) {
         </SheetContent>
       </Sheet>
 
-      <Dialog open={!!consentSourceId} onOpenChange={(open) => { if (!open) setConsentSourceId(null); }}><DialogContent><DialogHeader><DialogTitle>Analyze this message?</DialogTitle><DialogDescription>AI analysis will create a bounded draft for review. It will not approve orders. Current source and draft revisions will be checked before work begins.</DialogDescription></DialogHeader><DialogFooter><DialogClose render={<Button variant="outline" />} >Cancel</DialogClose><Button onClick={() => void analyzeSource()} disabled={analyzeMutation.isPending}>{analyzeMutation.isPending ? "Analyzing…" : "I consent, analyze"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={!!consentSourceId} onOpenChange={(open) => { if (!open && !analyzeMutation.isPending) setConsentSourceId(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="size-5 text-primary" strokeWidth={1.5} />
+              Draft change ticket with AI?
+            </DialogTitle>
+            <DialogDescription className="text-sm leading-relaxed">
+              TiffinTally will analyze the customer&apos;s request using Gemma &amp; JEV and generate an editable draft in <strong>Your call, chef</strong>.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="rounded-xl border bg-muted/40 p-3.5 text-xs text-muted-foreground flex flex-col gap-1.5">
+            <p className="font-medium text-foreground">Safe AI boundary:</p>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Nothing is changed automatically — only you approve or reject.</li>
+              <li>Original message text and timestamps remain permanently attached.</li>
+            </ul>
+          </div>
+
+          {analyzeMutation.isPending ? (
+            <div className="flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/10 p-3 text-sm text-primary animate-pulse">
+              <Loader2 className="size-4 animate-spin shrink-0" />
+              <span>Analyzing message with Gemma &amp; JEV…</span>
+            </div>
+          ) : null}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <DialogClose render={<Button variant="outline" disabled={analyzeMutation.isPending} />}>Cancel</DialogClose>
+            <Button onClick={() => void analyzeSource()} disabled={analyzeMutation.isPending || !selectedSource}>
+              {analyzeMutation.isPending ? (
+                <>
+                  <Loader2 className="size-4 animate-spin shrink-0" />
+                  Analyzing…
+                </>
+              ) : (
+                "I consent, analyze"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={!!sourceId} onOpenChange={(open) => { if (!open) setSourceId(null); }}><DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>Source detail</DialogTitle><DialogDescription>Original messages stay visible so every review decision has context.</DialogDescription></DialogHeader>{sourceDetail.isPending ? <p className="text-sm text-muted-foreground">Loading source…</p> : sourceDetail.error ? <ErrorState error={sourceDetail.error} retry={() => void sourceDetail.refetch()} /> : selectedSource ? <div className="flex flex-col gap-4"><div className="flex flex-wrap items-center gap-2"><StatusBadge status={selectedSource.status} /><span className="text-sm text-muted-foreground">Received {shortTime(selectedSource.receivedAt)}</span></div><p className="whitespace-pre-wrap rounded-2xl bg-muted/40 p-4 text-sm leading-6">{sourceDetail.data?.source.text ?? "Message text is available after loading."}</p><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => void dispositionSource("dismiss")} disabled={sourceDisposition.isPending}>Dismiss</Button><Button variant="outline" onClick={() => void dispositionSource("defer")} disabled={sourceDisposition.isPending}>Defer to {shortDate(selectedDate)}</Button><Button onClick={() => setConsentSourceId(selectedSource._id)} disabled={!capabilities.data?.ai.configured || analyzeMutation.isPending}>{capabilities.data?.ai.configured ? "Analyze with AI" : "AI unavailable"}</Button></div></div> : null}</DialogContent></Dialog>
        {proposalId ? <ProposalWorkspace sellerId={sellerId} proposalId={proposalId} serviceDate={selectedDate} onClose={() => setProposalId(null)} /> : null}
        <Dialog open={finalizeOpen} onOpenChange={setFinalizeOpen}><DialogContent><DialogHeader><DialogTitle>Finalize packing sheet</DialogTitle><DialogDescription>This freezes the approved quantities for {shortDate(selectedDate)} into an immutable sheet revision.</DialogDescription></DialogHeader><div className="flex flex-col gap-4"><div className="rounded-xl bg-muted/40 p-4"><p className="text-sm text-muted-foreground">Approved meals</p><p className="text-3xl font-semibold tabular-nums">{approvedTotal}</p></div><label className="flex items-start gap-3 rounded-xl border p-3 text-sm"><Checkbox checked={acknowledgeLateChange} onCheckedChange={(checked) => setAcknowledgeLateChange(checked === true)} /><span>I understand that later approved changes require a visible amendment.</span></label></div><DialogFooter><DialogClose render={<Button variant="outline" />}>Cancel</DialogClose><Button onClick={() => void finalizeSheet()} disabled={finalizeMutation.isPending || day.data?.pendingCount !== 0}>{finalizeMutation.isPending ? "Finalizing…" : "Finalize sheet"}</Button></DialogFooter></DialogContent></Dialog>

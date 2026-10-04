@@ -32,8 +32,8 @@ export function calculateDay(input: OrderState & { serviceDate: string; settings
     if (matches.length > 1) throw new AppError("OVERLAPPING_CHANGE", "Multiple active daily overrides", 409);
     const override = matches[0];
     const quantity = override?.quantity ?? baseline;
-    if (quantity > (settings?.quantityCap ?? 1000) || (quantity > 0 && settings && !isServiceDate(serviceDate, settings.weekdays))) throw new AppError("VALIDATION_FAILED", "Quantity violates the service policy", 422);
-    return { customerId: customer._id, alias: customer.alias, packingNote: customer.packingNote, baseline, quantity, approvalId: override?.approvalId ?? null };
+    const matchingPlan = plans.find((plan) => plan.customerId === customer._id && plan.startDate <= serviceDate && (plan.endDate === null || plan.endDate >= serviceDate));
+    return { customerId: customer._id, alias: customer.alias, packingNote: customer.packingNote, baseline, quantity, approvalId: override?.approvalId ?? (quantity > 0 && matchingPlan ? matchingPlan.approvalId : null) };
   });
   return { rows, total: rows.reduce((total, row) => total + row.quantity, 0) };
 }
@@ -150,9 +150,23 @@ export function previewOperations(input: OrderState & { operations: OrderOperati
   return { operations, affectedDates, effects, totals, conflicts, requiredAcknowledgements, continuesBeyondWindow: operations.some((op) => op.type === "replace_recurring_plan" && (op.endDate === null || op.endDate > addDays(op.startDate, 30))) };
 }
 
+export const AI_ADVISORY_WARNINGS = new Set([
+  "clarity_requires_review",
+  "classification_requires_review",
+  "extraction_classification_disagree",
+  "replacement_requires_confirmation",
+  "classification_unavailable",
+  "stale_analysis",
+]);
+
+export function isAdvisoryField(field: string): boolean {
+  return AI_ADVISORY_WARNINGS.has(field);
+}
+
 export function assertProposalReady(proposal: Proposal, source: Source | null): void {
   if (proposal.status !== "needs_review") throw new AppError("INVALID_STATE", "Only a reviewable draft can be approved", 409);
-  if (proposal.missingFields.length || proposal.operations.length === 0) throw new AppError("VALIDATION_FAILED", "Resolve all missing fields before approval", 422);
+  const blockingFields = proposal.missingFields.filter((field) => !isAdvisoryField(field));
+  if (blockingFields.length || proposal.operations.length === 0) throw new AppError("VALIDATION_FAILED", "Resolve all missing fields before approval", 422);
   if (proposal.sourceId === null) {
     if (!proposal.manualReason?.trim() || proposal.sourceRevision !== null || proposal.evidenceSpans.length) throw new AppError("VALIDATION_FAILED", "Manual proposal requires a reason and no source evidence", 422);
     return;

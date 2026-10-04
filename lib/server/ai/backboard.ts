@@ -78,6 +78,67 @@ async function send(options: SendMessageOptions, config: AiConfig, observe?: Pro
   if (String(response.status).toLowerCase() !== "completed" || response.toolCalls?.length) throw new AiStageError("INVALID_MODEL_OUTPUT", 502);
   return response;
 }
+function sanitizeLlmExtraction(raw: unknown, text: string): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const clone = JSON.parse(JSON.stringify(raw));
+  if (!("clarification" in clone) || clone.clarification === undefined) {
+    clone.clarification = null;
+  }
+  if (Array.isArray(clone.candidates)) {
+    for (const c of clone.candidates) {
+      if (!c || typeof c !== "object") continue;
+      if (!Array.isArray(c.missingFields)) c.missingFields = [];
+      if (!("datePhrase" in c) || c.datePhrase === undefined) c.datePhrase = null;
+      if (!("endDatePhrase" in c) || c.endDatePhrase === undefined) c.endDatePhrase = null;
+      if (typeof c.quantity !== "number") c.quantity = null;
+
+      if (Array.isArray(c.evidence)) {
+        for (const ev of c.evidence) {
+          if (ev && typeof ev.quote === "string") {
+            const idx = text.indexOf(ev.quote);
+            if (idx !== -1) {
+              ev.start = idx;
+              ev.end = idx + ev.quote.length;
+            }
+          }
+        }
+
+        // If datePhrase is verbatim in text but the LLM split evidence into smaller pieces:
+        if (typeof c.datePhrase === "string") {
+          const hasDateInEvidence = c.evidence.some((ev: { quote?: string }) => typeof ev.quote === "string" && ev.quote.includes(c.datePhrase!));
+          if (!hasDateInEvidence) {
+            const pIdx = text.indexOf(c.datePhrase);
+            if (pIdx !== -1) {
+              // The datePhrase is verbatim in text! Add or adjust evidence span so datePhrase is covered
+              if (c.evidence.length < 4) {
+                c.evidence.push({ start: pIdx, end: pIdx + c.datePhrase.length, quote: c.datePhrase });
+              } else if (c.evidence.length === 4) {
+                c.evidence[3] = { start: pIdx, end: pIdx + c.datePhrase.length, quote: c.datePhrase };
+              }
+            }
+          }
+        }
+
+        // Same for endDatePhrase if verbatim in text:
+        if (typeof c.endDatePhrase === "string") {
+          const hasEndInEvidence = c.evidence.some((ev: { quote?: string }) => typeof ev.quote === "string" && ev.quote.includes(c.endDatePhrase!));
+          if (!hasEndInEvidence) {
+            const endIdx = text.indexOf(c.endDatePhrase);
+            if (endIdx !== -1) {
+              if (c.evidence.length < 4) {
+                c.evidence.push({ start: endIdx, end: endIdx + c.endDatePhrase.length, quote: c.endDatePhrase });
+              } else if (c.evidence.length === 4) {
+                c.evidence[3] = { start: endIdx, end: endIdx + c.endDatePhrase.length, quote: c.endDatePhrase };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return clone;
+}
+
 export async function callGemma(source: ModelSourceContext, config: AiConfig = getAiConfig(), observe?: ProviderObserver): Promise<{ extraction: Extraction; metadata: ProviderMetadata }> {
   const content = gemmaContent(source);
   assertModelInput(content, config, EXTRACTION_PROMPT);
@@ -87,9 +148,15 @@ export async function callGemma(source: ModelSourceContext, config: AiConfig = g
   const details = metadata(response);
   if ((last?.modelProvider && last.modelProvider !== config.gemmaProvider) || (details.resolvedModel && !/gemma/i.test(details.resolvedModel))) throw new AiStageError("INVALID_MODEL_OUTPUT", 502);
   try {
-    if (!response.content || response.content.length > config.maxOutputChars) throw new Error("Invalid output length");
-    return { extraction: validateExtractionEvidence(JSON.parse(response.content), source.text), metadata: details };
-  } catch { throw new AiStageError("INVALID_MODEL_OUTPUT", 502); }
+    const rawContent = (response.content ?? "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    if (!rawContent || rawContent.length > config.maxOutputChars) throw new Error("Invalid output length");
+    const rawJson = JSON.parse(rawContent);
+    const sanitized = sanitizeLlmExtraction(rawJson, source.text);
+    return { extraction: validateExtractionEvidence(sanitized, source.text), metadata: details };
+  } catch (error) {
+    console.error("[Gemma Extraction Error]", error, "\nRaw LLM Content:", response.content);
+    throw new AiStageError("INVALID_MODEL_OUTPUT", 502);
+  }
 }
 export async function callJev(source: ModelSourceContext, extraction: Extraction, config: AiConfig = getAiConfig(), observe?: ProviderObserver): Promise<{ classification: JevResult; metadata: ProviderMetadata }> {
   const content = jevContent(source, extraction);

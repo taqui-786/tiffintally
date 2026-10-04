@@ -29,6 +29,15 @@ type Adjustment = CommerceInput<"previewInvoice">["adjustments"][number];
 type HeldInvoice = { variables: CommerceInput<"createInvoice">; invoiceId?: string };
 type ReceiptProof = { operation: string; committedAt: string; stateRevision: number };
 const errorText = (error: unknown) => error instanceof Error ? error.message : "This request could not be completed.";
+const friendlyError = (raw: string) => {
+  if (raw.includes("A seller billing adjustment requires an existing positive finalized row")) {
+    return "Billing adjustments can only be applied to dates where this customer had meals delivered in finalized packing sheets. Please pick an active delivery date, or clear adjustments.";
+  }
+  if (raw.includes("Configure a price before applying a billing adjustment")) {
+    return "Please configure the customer’s agreed price per meal in Prices & delivery setup before adding billing adjustments.";
+  }
+  return raw;
+};
 const isUncertain = (error: unknown) => error instanceof TypeError || (error instanceof ClientError && (error.code === "COMMIT_UNCERTAIN" || error.code === "INVALID_RESPONSE" || error.retryable || (error.status !== undefined && error.status >= 500)));
 const previousMonth = (date: string) => { const [year, month] = date.split("-").map(Number); return `${month === 1 ? year - 1 : year}-${String(month === 1 ? 12 : month - 1).padStart(2, "0")}`; };
 const dayLabel = (date: string) => new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00Z`));
