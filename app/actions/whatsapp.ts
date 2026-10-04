@@ -6,7 +6,13 @@ import { getAuth } from "@/lib/server/auth";
 import { getDb } from "@/lib/server/db/client";
 import { customerSchema, type Customer, type Seller } from "@/lib/contracts/records";
 import { getWhatsAppConfig, saveWhatsAppConfig, type WhatsAppConfig, type WhatsAppContact } from "@/lib/server/whatsapp";
-import { getSessionState, hasSavedSession, startWhatsAppWeb, stopWhatsAppWeb } from "@/lib/server/whatsapp-web";
+import {
+  getSavedPhoneNumber,
+  getSessionState,
+  hasSavedSession,
+  startWhatsAppWeb,
+  stopWhatsAppWeb,
+} from "@/lib/server/whatsapp-web";
 
 async function getAuthSeller() {
   const auth = await getAuth();
@@ -273,9 +279,29 @@ export type WhatsAppWebStatusResult =
 
 export async function getWhatsAppWebStatusAction(): Promise<WhatsAppWebStatusResult> {
   try {
-    const { seller } = await getAuthSeller();
-    const session = getSessionState(seller._id);
+    const { seller, db } = await getAuthSeller();
+    let session = getSessionState(seller._id);
     const saved = await hasSavedSession(seller._id);
+
+    // If session in memory doesn't have phone number yet, load from saved creds.json
+    if (!session.phoneNumber && saved) {
+      const savedPhone = await getSavedPhoneNumber(seller._id);
+      if (savedPhone) {
+        session.phoneNumber = savedPhone;
+      }
+    }
+
+    // If there is a saved session on disk or active config in DB, but the in-memory socket is disconnected:
+    // Auto-resume connection so the user never has to re-connect manually!
+    if (session.status === "disconnected") {
+      const config = await db.collection<WhatsAppConfig>("whatsappConfigs").findOne({ sellerId: seller._id });
+      if (saved || config?.connected) {
+        // Start background socket with saved session
+        void startWhatsAppWeb(seller._id);
+        session = getSessionState(seller._id);
+      }
+    }
+
     return {
       ok: true,
       status: session.status,

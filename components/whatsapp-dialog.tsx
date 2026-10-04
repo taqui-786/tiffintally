@@ -70,6 +70,7 @@ export function WhatsAppDialog() {
   const [open, setOpen] = useState(false);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [isQrLoading, setIsQrLoading] = useState(false);
+  const [isInitialChecking, setIsInitialChecking] = useState(true);
   const [importing, setImporting] = useState(false);
 
   // WhatsApp Web Session State
@@ -117,10 +118,19 @@ export function WhatsAppDialog() {
         if (res.status === "connected") {
           stopPolling();
           void loadContacts();
+        } else if (res.status === "connecting" || res.hasSavedSession) {
+          // Keep polling until connected or user acts
+          if (!pollTimerRef.current) {
+            pollTimerRef.current = setInterval(() => {
+              void checkWebStatus();
+            }, 2000);
+          }
         }
       }
     } catch {
       // silent
+    } finally {
+      setIsInitialChecking(false);
     }
   }
 
@@ -210,6 +220,12 @@ export function WhatsAppDialog() {
         });
         if (res.status === "connected") {
           void loadContacts();
+        } else if (res.status === "connecting" || res.hasSavedSession) {
+          // Poll while reconnecting saved session
+          stopPolling();
+          pollTimerRef.current = setInterval(() => {
+            void checkWebStatus();
+          }, 2000);
         }
       }
     });
@@ -363,6 +379,15 @@ export function WhatsAppDialog() {
               <Badge variant="default">
                 Live
               </Badge>
+            ) : isInitialChecking || webStatus.status === "connecting" ? (
+              <Badge variant="secondary" className="gap-1 font-normal">
+                <Loader2 className="size-3 animate-spin" />
+                Connecting…
+              </Badge>
+            ) : webStatus.hasSavedSession ? (
+              <Badge variant="outline">
+                Saved
+              </Badge>
             ) : (
               <Badge variant="secondary">
                 Connect
@@ -409,7 +434,15 @@ export function WhatsAppDialog() {
                 <CardContent className="flex flex-col gap-4">
                   <div aria-live="polite" role="status">
                     <Badge variant={isConnected ? "default" : "secondary"}>
-                      {isConnected ? "Connected" : webStatus.status === "scan_qr" ? "Scan to connect" : webStatus.status === "connecting" || isQrLoading ? "Connecting…" : "Not connected"}
+                      {isConnected
+                        ? "Connected"
+                        : webStatus.status === "scan_qr"
+                        ? "Scan to connect"
+                        : webStatus.status === "connecting" || isQrLoading || isInitialChecking
+                        ? "Connecting…"
+                        : webStatus.hasSavedSession
+                        ? "Saved session"
+                        : "Not connected"}
                     </Badge>
                   </div>
                   {isConnected ? (
@@ -450,14 +483,41 @@ export function WhatsAppDialog() {
                         </Button>
                       </div>
                     </>
-                  ) : webStatus.status === "connecting" || isQrLoading ? (
+                  ) : isInitialChecking || webStatus.status === "connecting" || isQrLoading ? (
                     <div className="flex items-start gap-3 py-2" role="status" aria-live="polite">
                       <Loader2 className="size-5 shrink-0 animate-spin text-primary" strokeWidth={1.5} />
                       <div className="flex flex-col gap-1">
-                        <p className="text-sm font-medium">Preparing your connection…</p>
-                        <p className="text-xs text-muted-foreground">Your QR code will appear here.</p>
+                        <p className="text-sm font-medium">
+                          {webStatus.hasSavedSession
+                            ? `Connecting saved phone${webStatus.phoneNumber ? ` (+${webStatus.phoneNumber})` : ""}…`
+                            : "Checking connection…"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {webStatus.hasSavedSession
+                            ? "Restoring connection to your linked WhatsApp account."
+                            : "Please wait a moment."}
+                        </p>
                       </div>
                     </div>
+                  ) : webStatus.hasSavedSession ? (
+                    <>
+                      <p className="text-sm text-muted-foreground">
+                        Your kitchen phone session {webStatus.phoneNumber ? `(+${webStatus.phoneNumber}) ` : ""}is saved.
+                      </p>
+                      <Button onClick={() => void handleStartQr()} disabled={isQrLoading} className="min-h-11 w-full">
+                        <RefreshCw data-icon="inline-start" strokeWidth={1.5} />
+                        Reconnect saved phone
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void handleStopWeb()}
+                        disabled={isQrLoading}
+                        className="text-xs text-muted-foreground hover:text-destructive"
+                      >
+                        Disconnect & link new phone
+                      </Button>
+                    </>
                   ) : (
                     <>
                       <p className="text-sm text-muted-foreground">Link your kitchen phone once. Your customers can keep sending their orders on WhatsApp.</p>

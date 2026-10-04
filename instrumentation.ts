@@ -3,6 +3,14 @@ import type { Instrumentation } from "next";
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     try { await import("./sentry.server.config"); } catch { /* Optional monitoring must not prevent startup. */ }
+    try {
+      const { restoreActiveWhatsAppSessions } = await import("./lib/server/whatsapp-web");
+      setTimeout(() => {
+        void restoreActiveWhatsAppSessions();
+      }, 1500);
+    } catch {
+      /* Optional startup restoration must not prevent server boot. */
+    }
   }
 }
 

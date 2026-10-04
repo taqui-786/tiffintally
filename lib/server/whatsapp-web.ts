@@ -22,12 +22,19 @@ export type WebSession = {
   lastError: string | null;
 };
 
-// Global session registry to survive dev module reloads in Node.js process
-const globalSessions = (globalThis as unknown as { __whatsappWebSessions?: Map<string, WebSession> });
+// Global session and in-flight registry to survive dev module reloads in Node.js process
+const globalSessions = (globalThis as unknown as {
+  __whatsappWebSessions?: Map<string, WebSession>;
+  __whatsappInFlight?: Map<string, Promise<WebSession>>;
+});
 if (!globalSessions.__whatsappWebSessions) {
   globalSessions.__whatsappWebSessions = new Map<string, WebSession>();
 }
+if (!globalSessions.__whatsappInFlight) {
+  globalSessions.__whatsappInFlight = new Map<string, Promise<WebSession>>();
+}
 const sessions = globalSessions.__whatsappWebSessions;
+const inFlight = globalSessions.__whatsappInFlight;
 
 type SocketOptions = NonNullable<Parameters<typeof makeWASocket>[0]>;
 const silentLogger = {
@@ -43,7 +50,7 @@ const silentLogger = {
 
 function getSessionDir(sellerId: string) {
   const safeId = sellerId.replace(/[^a-zA-Z0-9_-]/g, "");
-  return path.resolve(".private", "whatsapp-sessions", safeId);
+  return path.join(process.cwd(), ".private", "whatsapp-sessions", safeId);
 }
 
 export function getSessionState(sellerId: string): WebSession {
@@ -69,100 +76,135 @@ export async function hasSavedSession(sellerId: string): Promise<boolean> {
   }
 }
 
-// ponytail: single background socket per seller; reconnect on unexpected close
+export async function getSavedPhoneNumber(sellerId: string): Promise<string | null> {
+  try {
+    const credsPath = path.join(getSessionDir(sellerId), "creds.json");
+    const raw = await fs.readFile(credsPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed.me?.id) {
+      return parsed.me.id.split(":")[0].replace(/\D/g, "");
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Single background socket per seller; reconnect on unexpected close; mutex locked
 export async function startWhatsAppWeb(sellerId: string): Promise<WebSession> {
   const session = getSessionState(sellerId);
   if (session.status === "connected" && session.sock) {
     return session;
   }
 
-  const sessionDir = getSessionDir(sellerId);
-  await fs.mkdir(sessionDir, { recursive: true });
+  // Mutex lock: Prevent duplicate concurrent sockets from conflicting and invalidating the session
+  if (inFlight.has(sellerId)) {
+    return inFlight.get(sellerId)!;
+  }
 
-  session.status = "connecting";
-  session.lastError = null;
-
-  const { state, saveCreds } = await initMultiFileAuthState(sessionDir);
-
-  const sock = makeWASocket({
-    auth: state,
-    logger: silentLogger,
-    printQRInTerminal: false,
-    syncFullHistory: false,
-    generateHighQualityLinkPreview: false,
-  });
-
-  session.sock = sock;
-
-  sock.ev.on("creds.update", saveCreds);
-
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
+  const runConnect = async (): Promise<WebSession> => {
+    // Gracefully clean up any dangling previous socket before creating a new one
+    if (session.sock) {
       try {
-        session.qrDataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 6 });
-        session.status = "scan_qr";
-      } catch (err) {
-        console.error("qrcode_generation_error", err);
+        session.sock.ev.removeAllListeners("connection.update");
+        session.sock.ev.removeAllListeners("creds.update");
+        session.sock.ev.removeAllListeners("messages.upsert");
+        session.sock.ev.removeAllListeners("contacts.upsert");
+        session.sock.ev.removeAllListeners("chats.upsert");
+        session.sock.end(undefined);
+      } catch {
+        // ignore close errors
       }
+      session.sock = null;
     }
 
-    if (connection === "open") {
-      const waUser = sock.user?.id ? sock.user.id.split(":")[0].replace(/\D/g, "") : null;
-      session.status = "connected";
-      session.qrDataUrl = null;
-      session.phoneNumber = waUser;
-      session.lastError = null;
+    const sessionDir = getSessionDir(sellerId);
+    await fs.mkdir(sessionDir, { recursive: true });
 
-      // Update DB config flag
-      try {
-        const db = await getDb();
-        await db.collection<WhatsAppConfig>("whatsappConfigs").updateOne(
-          { sellerId },
-          {
-            $set: {
-              sellerId,
-              phoneNumberId: "qr_web",
-              accessToken: "qr_web_active",
-              verifyToken: "qr_web",
-              connected: true,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-          { upsert: true }
-        );
-      } catch (dbErr) {
-        console.error("whatsapp_config_db_error", dbErr);
-      }
+    session.status = "connecting";
+    session.lastError = null;
+
+    const { state, saveCreds } = await initMultiFileAuthState(sessionDir);
+
+    if (state.creds.me?.id) {
+      session.phoneNumber = state.creds.me.id.split(":")[0].replace(/\D/g, "");
     }
 
-    if (connection === "close") {
-      const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+    const sock = makeWASocket({
+      auth: state,
+      logger: silentLogger,
+      printQRInTerminal: false,
+      syncFullHistory: false,
+      generateHighQualityLinkPreview: false,
+      browser: ["TiffinTally", "Chrome", "1.0.0"],
+    });
 
-      if (statusCode === DisconnectReason.loggedOut) {
-        session.status = "disconnected";
-        session.sock = null;
-        session.phoneNumber = null;
-        session.qrDataUrl = null;
+    session.sock = sock;
+
+    sock.ev.on("creds.update", saveCreds);
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
         try {
-          await fs.rm(sessionDir, { recursive: true, force: true });
-          const db = await getDb();
-          await db.collection("whatsappConfigs").deleteOne({ sellerId });
-        } catch {
-          // ignore cleanup errors
+          session.qrDataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 6 });
+          session.status = "scan_qr";
+        } catch (err) {
+          console.error("qrcode_generation_error", err);
         }
-      } else if (shouldReconnect) {
-        // Reconnect after brief pause
-        setTimeout(() => {
-          void startWhatsAppWeb(sellerId);
-        }, 3000);
-      } else {
-        session.status = "disconnected";
       }
-    }
-  });
+
+      if (connection === "open") {
+        const waUser = (sock.user?.id || state.creds.me?.id)?.split(":")[0]?.replace(/\D/g, "") || session.phoneNumber;
+        session.status = "connected";
+        session.qrDataUrl = null;
+        session.phoneNumber = waUser;
+        session.lastError = null;
+
+        // Update DB config flag
+        try {
+          const db = await getDb();
+          await db.collection<WhatsAppConfig>("whatsappConfigs").updateOne(
+            { sellerId },
+            {
+              $set: {
+                sellerId,
+                phoneNumberId: "qr_web",
+                accessToken: "qr_web_active",
+                verifyToken: "qr_web",
+                connected: true,
+                updatedAt: new Date().toISOString(),
+              },
+            },
+            { upsert: true }
+          );
+        } catch (dbErr) {
+          console.error("whatsapp_config_db_error", dbErr);
+        }
+      }
+
+      if (connection === "close") {
+        const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        // NOTE: NEVER delete sessionDir on disk here! Deleting credentials on transient 401/timeout
+        // causes permanent session loss. Only user-initiated disconnect (stopWhatsAppWeb) deletes credentials.
+        if (statusCode === DisconnectReason.loggedOut) {
+          session.status = "disconnected";
+          session.sock = null;
+          session.qrDataUrl = null;
+          session.lastError = "Session disconnected by WhatsApp. Please scan QR to reconnect.";
+        } else if (shouldReconnect) {
+          // Reconnect after brief pause
+          setTimeout(() => {
+            void startWhatsAppWeb(sellerId);
+          }, 3000);
+        } else {
+          session.status = "disconnected";
+        }
+      }
+    });
 
   sock.ev.on("contacts.upsert", async (contacts) => {
     try {
@@ -289,16 +331,29 @@ export async function startWhatsAppWeb(sellerId: string): Promise<WebSession> {
     }
   });
 
-  // Wait briefly for initial QR code or connection event
-  await new Promise((resolve) => setTimeout(resolve, 800));
+    // Wait briefly for initial QR code or connection event
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
-  return session;
+    return session;
+  };
+
+  const promise = runConnect().finally(() => {
+    inFlight.delete(sellerId);
+  });
+  inFlight.set(sellerId, promise);
+  return promise;
 }
 
 export async function stopWhatsAppWeb(sellerId: string): Promise<void> {
+  inFlight.delete(sellerId);
   const session = getSessionState(sellerId);
   if (session.sock) {
     try {
+      session.sock.ev.removeAllListeners("connection.update");
+      session.sock.ev.removeAllListeners("creds.update");
+      session.sock.ev.removeAllListeners("messages.upsert");
+      session.sock.ev.removeAllListeners("contacts.upsert");
+      session.sock.ev.removeAllListeners("chats.upsert");
       session.sock.end(undefined);
     } catch {
       // ignore close errors
@@ -308,6 +363,7 @@ export async function stopWhatsAppWeb(sellerId: string): Promise<void> {
   session.status = "disconnected";
   session.qrDataUrl = null;
   session.phoneNumber = null;
+  session.lastError = null;
 
   try {
     const sessionDir = getSessionDir(sellerId);
@@ -316,5 +372,19 @@ export async function stopWhatsAppWeb(sellerId: string): Promise<void> {
     await db.collection("whatsappConfigs").deleteOne({ sellerId });
   } catch {
     // ignore
+  }
+}
+
+export async function restoreActiveWhatsAppSessions(): Promise<void> {
+  try {
+    const db = await getDb();
+    const configs = await db.collection<WhatsAppConfig>("whatsappConfigs").find({ connected: true }).toArray();
+    for (const config of configs) {
+      if (await hasSavedSession(config.sellerId)) {
+        void startWhatsAppWeb(config.sellerId);
+      }
+    }
+  } catch (err) {
+    console.error("[WHATSAPP_WEB] Error restoring sessions on startup:", err);
   }
 }
