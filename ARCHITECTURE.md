@@ -1,4 +1,4 @@
-# TiffinDelta architecture
+# TiffinTally architecture
 
 Status: backend implementation through Phase 2, October 4, 2026. See [core setup](docs/BACKEND_SETUP.md), [Phase 2 implementation/setup](docs/BACKEND_PHASE_2_SETUP.md) and [45-operation contracts](docs/openapi.json). Phase 1 Atlas initialization passed; live Google/owner checks, Gemma/JEV, TabPFN weights/inference, Sentry and deployment remain unverified. Starter UI is unchanged. Details below remain the earlier architecture baseline where superseded by current phase/setup notes.
 
@@ -150,7 +150,7 @@ Pending before a real-user trial: recipient and consented examples, actual menu/
 
 ## References
 
-- [JEV research and original TiffinDelta proposal](docs/IDEAS_JEV_RESEARCH.md) — historical rationale, not current scope.
+- [JEV research and original TiffinTally proposal](docs/IDEAS_JEV_RESEARCH.md) — historical rationale, not current scope.
 - [TypeSafe state](https://docs.typesafe.ai/concepts/state), [confidence](https://docs.typesafe.ai/confidence) and [limitations](https://docs.typesafe.ai/model-jaggedness/jev-1.13).
 - [MongoDB atomicity](https://www.mongodb.com/docs/manual/core/write-operations-atomicity/), [transactions](https://www.mongodb.com/docs/manual/core/transactions/) and [unique indexes](https://www.mongodb.com/docs/manual/core/index-unique/).
 - [Mastra workflows](https://mastra.ai/docs/workflows/overview) and [Gemma documentation](https://ai.google.dev/gemma/docs).

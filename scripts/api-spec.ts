@@ -64,7 +64,7 @@ async function main() {
     operationId: `health_${kind}`, security: [], responses: Object.fromEntries((kind === "ready" ? [200, 503] : [200]).map((status) => [String(status), { description: "Generic health state", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } } } }])),
   } };
   const document = {
-    openapi: "3.1.0", info: { title: "TiffinDelta Backend API", version: "2.0.0", description: "Generated from runtime Zod contracts. Reviewed orders, Backboard analysis drafts, separate forecasts and bounded privacy operations. Better Auth owns /api/auth/* with its own protocol. No product UI." },
+    openapi: "3.1.0", info: { title: "TiffinTally Backend API", version: "2.0.0", description: "Generated from runtime Zod contracts. Reviewed orders, Backboard analysis drafts, separate forecasts and bounded privacy operations. Better Auth owns /api/auth/* with its own protocol. No product UI." },
     servers: [{ url: "/" }], paths,
     components: { schemas: components, securitySchemes: {
       sessionCookie: { type: "apiKey", in: "cookie", name: "better-auth.session_token" },

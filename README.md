@@ -1,4 +1,4 @@
-# TiffinDelta · More Cooking. Less Chasing.
+# TiffinTally · More Cooking. Less Chasing.
 
 > **AI-Powered Order Reconciliation & Daily Dispatch Desk for Independent Tiffin Services & Home Kitchens.**
 > Built for the **Hacktoberfest Weekend Challenge: Build for a Friend**.
@@ -23,13 +23,13 @@ Small tiffin sellers and home kitchens cook for dozens of daily subscribers. Cus
 - **Missed extras** $\rightarrow$ Hungry, frustrated regulars.
 - **Existing POS/restaurant software** is built for dine-in tables, not daily recurring subscriptions with frequent exception dates.
 
-**The TiffinDelta Solution:** An automated bridge that ingests WhatsApp messages and voice notes, transforms them into verified one-click review proposals using a multi-model AI pipeline, and produces an **immutable, finalized daily packing sheet**.
+**The TiffinTally Solution:** An automated bridge that ingests WhatsApp messages and voice notes, transforms them into verified one-click review proposals using a multi-model AI pipeline, and produces an **immutable, finalized daily packing sheet**.
 
 ---
 
 ## ⚡ Core Philosophy: "AI Proposes, Human Disposes"
 
-TiffinDelta never modifies customer meal plans silently. 
+TiffinTally never modifies customer meal plans silently. 
 1. **AI extracts & drafts**: The AI reads messy text/voice notes and constructs structured proposals with cited evidence spans.
 2. **Kitchen owner confirms**: With a single tap, the owner approves, edits, or discards the proposal.
 3. **Deterministic Math & Transactions**: Quantities, dates, and state revisions are enforced by ACID MongoDB replica-set snapshot transactions. Double-importing a message never double-counts a meal.

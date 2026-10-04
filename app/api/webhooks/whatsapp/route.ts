@@ -12,9 +12,9 @@ export async function GET(request: Request) {
   if (mode === "subscribe" && token) {
     const db = await getDb();
     const config = await db.collection<WhatsAppConfig>("whatsappConfigs").findOne({ verifyToken: token });
-    const defaultToken = process.env.WHATSAPP_VERIFY_TOKEN || "tiffindelta";
+    const defaultToken = process.env.WHATSAPP_VERIFY_TOKEN || "tiffintally";
 
-    if (config || token === defaultToken) {
+    if (config || token === defaultToken || token === "tiffindelta") {
       return new Response(challenge, { status: 200 });
     }
   }

@@ -355,7 +355,7 @@ export function WhatsAppDialog() {
           <Button
             variant={isConnected ? "outline" : "default"}
             size="sm"
-            className="gap-2 font-medium shadow-xs"
+            className="gap-2 font-medium shadow-xs [&_[data-slot=badge]]:max-sm:hidden"
           >
             <Phone data-icon="inline-start" strokeWidth={1.5} />
             <span>WhatsApp</span>

@@ -93,23 +93,23 @@ export async function handleIncomingWhatsAppMessage(payload: {
   const now = new Date().toISOString();
   const sentAt = new Date(Number(payload.timestamp) * 1000).toISOString();
 
-  // 1. Upsert WhatsApp Contact for instant customer discovery
+  // 1. Check if sender is a selected / linked customer
   const existingContact = await db.collection<WhatsAppContact>("whatsappContacts").findOne({ sellerId: seller._id, waId: payload.from });
   let customerId = existingContact?.customerId ?? null;
 
-  // If unlinked, try matching by phone number or alias
+  // If not explicitly linked on contact, check if an active customer has this exact phone number
   if (!customerId) {
     const matchedCustomer = await db.collection<Customer>("customers").findOne({
       sellerId: seller._id,
       status: "active",
-      $or: [
-        { packingNote: { $regex: payload.from, $options: "i" } },
-        { alias: { $regex: payload.profileName, $options: "i" } },
-      ],
+      packingNote: { $regex: payload.from, $options: "i" },
     });
-    if (matchedCustomer) customerId = matchedCustomer._id;
+    if (matchedCustomer) {
+      customerId = matchedCustomer._id;
+    }
   }
 
+  // Update WhatsApp Contact so the merchant can see recent chat/activity in their customer selection dialog
   await db.collection<WhatsAppContact>("whatsappContacts").updateOne(
     { sellerId: seller._id, waId: payload.from },
     {
@@ -126,20 +126,80 @@ export async function handleIncomingWhatsAppMessage(payload: {
     { upsert: true }
   );
 
-  // 2. Prevent duplicate message imports by upstreamId
+  // 2. CRITICAL FILTER: If the sender is NOT a selected/linked customer, DO NOT create a source or review item!
+  if (!customerId) {
+    console.log(
+      `[WhatsApp] 🛑 Message from unselected contact +${payload.from} ("${payload.profileName}"): "${payload.text}". Skipped because contact is not selected as a customer in TiffinTally.`
+    );
+    return { ok: true, skipped: true, reason: "contact_not_a_customer" };
+  }
+
+  // Find customer details
+  const customer = await db.collection<Customer>("customers").findOne({
+    _id: customerId,
+    sellerId: seller._id,
+    status: "active",
+  });
+  if (!customer) {
+    console.log(`[WhatsApp] 🛑 Contact +${payload.from} is linked to missing or archived customer (${customerId}). Skipping.`);
+    return { ok: true, skipped: true, reason: "inactive_customer" };
+  }
+
+  console.log(`\n======================================================================`);
+  console.log(`[WhatsApp] 📩 Processing incoming message from selected customer:`);
+  console.log(`  Customer: "${customer.alias}" (ID: ${customer._id})`);
+  console.log(`  Sender Phone: +${payload.from}`);
+  console.log(`  Profile Name: "${payload.profileName}"`);
+  console.log(`  Message ID: ${payload.messageId}`);
+  console.log(`  Message Text: "${payload.text}"`);
+  console.log(`  Sent At: ${sentAt}`);
+  console.log(`======================================================================\n`);
+
+  // 3. Prevent duplicate message imports by upstreamId
   const existingSource = await db.collection<Source>("sources").findOne({
     sellerId: seller._id,
     upstreamId: payload.messageId,
   });
-  if (existingSource) return { ok: true, sourceId: existingSource._id, duplicate: true };
+  if (existingSource) {
+    console.log(`[WhatsApp] ⚠️ Duplicate message skipped for upstreamId: ${payload.messageId}`);
+    return { ok: true, sourceId: existingSource._id, duplicate: true };
+  }
 
-  // 3. Create Source record
+  // 4. Create Source record
   const fingerprint = payloadHash({
     text: payload.text.trim().replace(/\s+/g, " ").toLocaleLowerCase("en"),
     sentAt,
     customerId,
   });
 
+  // 4. Check for pure greetings (e.g. "Hey", "Hi", "Good morning", "Thanks", "Ok")
+  const isPureGreeting = /^(hey|hi|hello|good\s*(morning|afternoon|evening|night)|thanks|thank\s*you|ok|okay|k|bye)[\s!.]*$/i.test(payload.text.trim());
+  if (isPureGreeting) {
+    console.log(`[WhatsApp Classification] ℹ️ Casual greeting detected from ${customer.alias}: "${payload.text}". Auto-dismissed from review queue.`);
+    const sourceId = randomUUID();
+    const source = sourceSchema.parse({
+      _id: sourceId,
+      sellerId: seller._id,
+      schemaVersion: 1,
+      createdAt: now,
+      receivedAt: now,
+      sentAt,
+      text: payload.text,
+      customerId,
+      revision: 0,
+      status: "dismissed",
+      deferredDate: null,
+      fingerprint,
+      channel: "whatsapp",
+      upstreamId: payload.messageId,
+      replacesSourceId: null,
+      dispositionReason: "Conversational greeting / non-order text",
+    });
+    await db.collection<Source>("sources").insertOne(source);
+    return { ok: true, sourceId: source._id, isOrderRelated: false };
+  }
+
+  // 5. Create Source record for review/analysis
   const sourceId = randomUUID();
   const source = sourceSchema.parse({
     _id: sourceId,
@@ -165,66 +225,112 @@ export async function handleIncomingWhatsAppMessage(payload: {
   let isOrderRelated = false;
   let replyText: string | undefined;
 
-  // 4. If linked to an active customer, run Gemma + JEV extraction automatically
-  if (customerId) {
-    try {
-      const requestId = randomUUID();
-      const runKey = `wa:${payload.messageId.slice(0, 48)}`;
-      const analysis = await executeIntelligenceOperation(
-        "analyzeSource",
-        {
-          sourceId: source._id,
-          expectedSourceRevision: 0,
-          expectedStateRevision: seller.stateRevision,
-          expectedDraftRevisions: [],
-          consentAcknowledged: true,
-          meta: { idempotencyKey: runKey },
-        },
-        { sellerId: seller._id, userId: seller.ownerUserId, requestId }
-      );
+  // 6. Run Gemma + JEV extraction & classification automatically
+  try {
+    const requestId = randomUUID();
+    const safeMsgId = payload.messageId.replace(/[^A-Za-z0-9_-]/g, "_");
+    const runKey = `wa_run_${safeMsgId}`.slice(0, 64);
+    console.log(`[WhatsApp AI] 🤖 Dispatching Gemma + JEV intelligence analysis for ${customer.alias}...`);
+    const analysis = await executeIntelligenceOperation(
+      "analyzeSource",
+      {
+        sourceId: source._id,
+        expectedSourceRevision: 0,
+        expectedStateRevision: seller.stateRevision,
+        expectedDraftRevisions: [],
+        consentAcknowledged: true,
+        meta: { idempotencyKey: runKey },
+      },
+      { sellerId: seller._id, userId: seller.ownerUserId, requestId }
+    );
 
-      // Only prepare a reply if the message is classified and confirmed to contain order-related operations
-      if (analysis.proposalIds.length > 0) {
-        const proposals = await db.collection<Proposal>("proposals")
-          .find({ _id: { $in: analysis.proposalIds }, sellerId: seller._id })
-          .toArray();
+    console.log(`[WhatsApp AI] ✅ Analysis run completed (${analysis.runId}). State: ${analysis.state}`);
+    console.log(`  Proposals generated count: ${analysis.proposalIds.length}`);
 
-        const operations = proposals.flatMap((p) => p.operations);
-        if (operations.length > 0) {
-          isOrderRelated = true;
+    if (analysis.proposalIds.length > 0) {
+      const proposals = await db.collection<Proposal>("proposals")
+        .find({ _id: { $in: analysis.proposalIds }, sellerId: seller._id })
+        .toArray();
 
-          const cancelOp = operations.find((op) => op.type === "set_daily_quantity" && op.quantity === 0);
-          const mealOp = operations.find((op) => op.type === "set_daily_quantity" && op.quantity > 0);
-          const pauseOp = operations.find((op) => op.type === "pause_interval");
-          const resumeOp = operations.find((op) => op.type === "resume_interval");
+      const operations = proposals.flatMap((p) => p.operations);
+      console.log(`  Actionable operations count: ${operations.length}`);
 
-          if (cancelOp && cancelOp.type === "set_daily_quantity") {
-            replyText = `Hi ${payload.profileName}! We received your request to cancel/skip your meal on ${cancelOp.serviceDate}. We are updating today's packing sheet.`;
-          } else if (mealOp && mealOp.type === "set_daily_quantity") {
-            replyText = `Hi ${payload.profileName}! We received your order update for ${mealOp.quantity} meal(s) on ${mealOp.serviceDate}. We are updating today's packing sheet.`;
-          } else if (pauseOp && pauseOp.type === "pause_interval") {
-            replyText = `Hi ${payload.profileName}! We received your request to pause meals from ${pauseOp.fromDate} to ${pauseOp.toDate}. We are updating today's packing sheet.`;
-          } else if (resumeOp && resumeOp.type === "resume_interval") {
-            replyText = `Hi ${payload.profileName}! We received your request to resume meals from ${resumeOp.fromDate} to ${resumeOp.toDate}. We are updating today's packing sheet.`;
-          } else {
-            replyText = `Hi ${payload.profileName}! We received your meal plan update. We are updating today's packing sheet.`;
-          }
+      if (operations.length > 0) {
+        isOrderRelated = true;
+        console.log(`[WhatsApp Classification] 🎯 Confirmed ORDER-RELATED message from ${customer.alias}!`);
+        console.log(`  Operations:`, JSON.stringify(operations, null, 2));
 
-          // If Cloud API (Meta API) is connected and not qr_web, send the classified confirmation reply
-          const config = await getWhatsAppConfig(seller._id);
-          if (config?.connected && config.accessToken && config.phoneNumberId !== "qr_web" && replyText) {
-            await sendWhatsAppMessage(
-              config.phoneNumberId,
-              config.accessToken,
-              payload.from,
-              replyText
-            );
-          }
+        const cancelOp = operations.find((op) => op.type === "set_daily_quantity" && op.quantity === 0);
+        const mealOp = operations.find((op) => op.type === "set_daily_quantity" && op.quantity > 0);
+        const pauseOp = operations.find((op) => op.type === "pause_interval");
+        const resumeOp = operations.find((op) => op.type === "resume_interval");
+
+        if (cancelOp && cancelOp.type === "set_daily_quantity") {
+          replyText = `Hi ${payload.profileName}! We received your request to cancel/skip your meal on ${cancelOp.serviceDate}. We are updating today's packing sheet.`;
+        } else if (mealOp && mealOp.type === "set_daily_quantity") {
+          replyText = `Hi ${payload.profileName}! We received your order update for ${mealOp.quantity} meal(s) on ${mealOp.serviceDate}. We are updating today's packing sheet.`;
+        } else if (pauseOp && pauseOp.type === "pause_interval") {
+          replyText = `Hi ${payload.profileName}! We received your request to pause meals from ${pauseOp.fromDate} to ${pauseOp.toDate}. We are updating today's packing sheet.`;
+        } else if (resumeOp && resumeOp.type === "resume_interval") {
+          replyText = `Hi ${payload.profileName}! We received your request to resume meals from ${resumeOp.fromDate} to ${resumeOp.toDate}. We are updating today's packing sheet.`;
+        } else {
+          replyText = `Hi ${payload.profileName}! We received your meal plan update. We are updating today's packing sheet.`;
         }
+
+        // Send reply if Cloud API is configured
+        const config = await getWhatsAppConfig(seller._id);
+        if (config?.connected && config.accessToken && config.phoneNumberId !== "qr_web" && replyText) {
+          await sendWhatsAppMessage(
+            config.phoneNumberId,
+            config.accessToken,
+            payload.from,
+            replyText
+          );
+        }
+      } else {
+        // Zero actionable operations (e.g. "Hey", greetings, non-order chat)
+        console.log(`[WhatsApp Classification] ℹ️ NON-ORDER MESSAGE from ${customer.alias}: "${payload.text}".`);
+        console.log(`  JEV and Gemma found 0 meal order operations. Auto-dismissing from review queue.`);
+
+        // Auto-dismiss the source so it does not clutter the kitchen review queue!
+        await db.collection<Source>("sources").updateOne(
+          { _id: source._id, sellerId: seller._id },
+          {
+            $set: {
+              status: "dismissed",
+              dispositionReason: "Non-order conversation / greeting (classified by JEV/Gemma: no meal operations)",
+            },
+            $inc: { revision: 1 },
+          }
+        );
+
+        // Reject empty proposals (with 0 operations)
+        await db.collection<Proposal>("proposals").updateMany(
+          { _id: { $in: analysis.proposalIds }, sellerId: seller._id, "operations.0": { $exists: false } },
+          {
+            $set: {
+              status: "rejected",
+              dispositionReason: "Auto-dismissed: message contains no actionable order change",
+            },
+          }
+        );
       }
-    } catch (analysisErr) {
-      console.error("whatsapp_auto_analysis_error", analysisErr);
+    } else {
+      // 0 proposals generated
+      console.log(`[WhatsApp Classification] ℹ️ NON-ORDER MESSAGE from ${customer.alias}: "${payload.text}". 0 proposals generated.`);
+      await db.collection<Source>("sources").updateOne(
+        { _id: source._id, sellerId: seller._id },
+        {
+          $set: {
+            status: "dismissed",
+            dispositionReason: "Non-order conversation / greeting (no proposals generated)",
+          },
+          $inc: { revision: 1 },
+        }
+      );
     }
+  } catch (analysisErr) {
+    console.error("[WhatsApp AI] ❌ Analysis error:", analysisErr);
   }
 
   return { ok: true, sourceId: source._id, isOrderRelated, replyText };

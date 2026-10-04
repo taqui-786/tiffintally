@@ -30,7 +30,7 @@ export async function getWhatsAppStatusAction(): Promise<WhatsAppStatusResult> {
       ok: true,
       connected: Boolean(config?.connected),
       phoneNumberId: config?.phoneNumberId || "",
-      verifyToken: config?.verifyToken || "tiffindelta",
+      verifyToken: config?.verifyToken || "tiffintally",
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Failed to get WhatsApp status." };

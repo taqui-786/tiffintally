@@ -115,13 +115,43 @@ async function analyze(input: IntelligenceInput<"analyzeSource">, context: Selle
     try {
       assertModelInput(gemmaContent(snapshot.modelSource), config, EXTRACTION_PROMPT);
       await setStage("gemma");
+      console.log(`\n----------------------------------------------------------------------`);
+      console.log(`[AI Pipeline] 🚀 Starting AI Extraction via Gemma (${config.gemmaModel})`);
+      console.log(`  Customer: "${snapshot.modelSource.alias}"`);
+      console.log(`  Message Text: "${snapshot.modelSource.text}"`);
+      console.log(`  Timezone: ${snapshot.modelSource.timezone}`);
+      console.log(`----------------------------------------------------------------------`);
+
       const gemma = await withStageSpan("gemma", { stage: "gemma", "gen_ai.request.model": config.gemmaModel, "gen_ai.provider.name": "backboard", "gen_ai.operation.name": "chat" }, () => boundedStage(callGemma(snapshot.modelSource, config, (metadata) => recordProviderResponse(db, run, "gemma", metadata)), stageBudget()));
       extraction = gemma.extraction;
+
+      console.log(`[Gemma Extraction] ✅ Candidates extracted (${extraction.candidates.length}):`);
+      if (extraction.candidates.length === 0) {
+        console.log(`  (No order change candidates found in text)`);
+      } else {
+        for (const [idx, c] of extraction.candidates.entries()) {
+          console.log(`  [Candidate ${idx + 1}] Kind: ${c.kind}, Quantity: ${c.quantity ?? "N/A"}, Date: "${c.datePhrase ?? "none"}", EndDate: "${c.endDatePhrase ?? "none"}"`);
+          console.log(`    Evidence: "${c.evidence.map((e) => e.quote).join(" | ")}"`);
+          if (c.missingFields.length) console.log(`    Missing Fields: [${c.missingFields.join(", ")}]`);
+        }
+      }
+
       await setStage("jev");
+      console.log(`\n[AI Pipeline] ⚖️ Invoking JEV Classification (${config.jevModel})...`);
       const jev = await withStageSpan("jev", { stage: "jev", "gen_ai.request.model": config.jevModel, "gen_ai.provider.name": "backboard", "gen_ai.operation.name": "classify" }, () => boundedStage(callJev(snapshot.modelSource, extraction!, config, (metadata) => recordProviderResponse(db, run, "jev", metadata)), stageBudget()));
       classification = jev.classification;
+
+      console.log(`[JEV Classification] 🎯 JEV System One Classification:`);
+      console.log(`  Model: ${classification.model}`);
+      console.log(`  Intent Choice: "${classification.answers.intent.choice}" (confidence: ${(classification.answers.intent.confidence * 100).toFixed(1)}%)`);
+      console.log(`  Intent Probabilities:`, classification.answers.intent.probabilities);
+      console.log(`  Clarity Score: ${classification.answers.clarity.score} (confidence: ${(classification.answers.clarity.confidence * 100).toFixed(1)}%)`);
+      console.log(`  Clarity Assessment: "${classification.answers.clarity.legend[String(classification.answers.clarity.score)] || "Unknown"}"`);
+      console.log(`  Explicit Schedule Replacement (noul): ${classification.answers.explicitReplacement.noul}`);
+      console.log(`----------------------------------------------------------------------\n`);
     } catch (failure) {
       captureSafeBackendError(failure, context.requestId);
+      console.error(`[AI Pipeline] ❌ AI Pipeline failure:`, failure);
       error = failure instanceof AiStageError ? failure : failure instanceof AppError ? new AiStageError(failure.code, failure.status) : new AiStageError("PROVIDER_OUTCOME_UNKNOWN", 503, true);
     }
     return withStageSpan("persistence", { stage: "persistence" }, () => commitAnalysis(run, snapshot, context, extraction, classification, error));
