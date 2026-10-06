@@ -30,8 +30,10 @@ Small tiffin sellers and home kitchens cook for dozens of daily subscribers. Cus
 ## ⚡ Core Philosophy: "AI Proposes, Human Disposes"
 
 TiffinTally never modifies customer meal plans silently. 
-1. **AI extracts & drafts**: The AI reads messy text/voice notes and constructs structured proposals with cited evidence spans.
-2. **Kitchen owner confirms**: With a single tap, the owner approves, edits, or discards the proposal.
+1. **AI triages, classifies & drafts**: When an incoming WhatsApp message or voice note arrives:
+   - **JEV** evaluates whether the message is an order change (`pause`, `resume`, `quantity_change`, `order`, `recurring_change`) or non-order noise (greetings, general chat). Non-order chatter is auto-dismissed so the kitchen queue stays uncluttered.
+   - For order changes, **Gemma** extracts quantities, dates, and evidence spans, while **JEV** verifies clarity and plan replacement semantics.
+2. **Kitchen owner confirms**: With a single tap in the dashboard under **"Your call, chef"**, the owner approves, edits, or discards the proposal.
 3. **Deterministic Math & Transactions**: Quantities, dates, and state revisions are enforced by ACID MongoDB replica-set snapshot transactions. Double-importing a message never double-counts a meal.
 
 ---
@@ -43,17 +45,18 @@ We don't use AI as a generic chatbot gimmick. Every model performs a specialized
 | Model | Purpose | Why This Model? |
 | :--- | :--- | :--- |
 | **ElevenLabs Scribe v2** | **Voice Note Parsing** | Customers often send voice notes in regional languages or noisy backgrounds. Scribe v2 provides low-latency, high-accuracy speech-to-text at a fraction of standard transcription costs. |
-| **Gemma 27B** *(via Backboard)* | **Intent & Entity Extraction** | Parses messy, informal messages into structured intent (`set_daily_quantity`, `pause_plan`, `resume_plan`), matching customer aliases, dates, and meal quantities. |
-| **JEV (Judge / Evaluation Verifier)** | **Confidence & Hallucination Guard** | A specialized verification model that audits Gemma's extraction against the raw source text. Scores confidence, verifies exact text spans, and blocks hallucinations before any database write. |
+| **Gemma 27B** *(via Backboard)* | **Entity & Operation Extraction** | Parses messy, informal messages into candidate meal operations (`set_daily_quantity`, `pause_plan`, `resume_plan`), matching customer aliases, dates, meal counts, and verbatim quotes. |
+| **JEV (Judge / Evaluation Verifier)** *(via TypeSafe System One)* | **Message Intent Classification & Verification Guard** | Evaluates incoming WhatsApp messages using typed parallel decisions: classifies intent (`order`, `pause`, `resume`, `quantity_change`, `unclear`), verifies if a change replaces an ongoing plan (`explicitReplacement`), scores completeness (`clarity`), blocks hallucinations by cross-checking Gemma, and auto-dismisses non-order banter. Also feeds tabular features into TabPFN demand forecasting. |
 | **TabPFN** | **Zero-Shot Demand Forecasting** | Tabular foundation model that predicts next-day meal counts and ingredient demand based on weekday trends, historical cancellations, and weather without costly training. |
 
 ---
 
 ## 🌟 Key Features
 
-1. **📱 Native WhatsApp Web QR Bridge**
+1. **📱 Native WhatsApp Web QR Bridge & Real-Time Ingestion**
    - Built-in Baileys WhatsApp Web socket connection.
    - Scan a QR code from "Linked Devices" on your kitchen phone; syncs customer contacts and streams incoming meal change messages in real time.
+   - **Automated AI Triage & Instant Auto-Reply:** Every incoming WhatsApp text or voice note is immediately evaluated by Gemma & JEV. Actionable order updates (skips, pauses, extra meals) generate draft proposals and send instant confirmation replies to the customer, while non-order chit-chat (greetings, casual banter) is automatically dismissed.
 2. **🎙️ Voice Note Audio Transcriber**
    - Direct audio stream processing using ElevenLabs Scribe v2.
    - Converts colloquial voice instructions directly into text for downstream AI classification.
@@ -77,7 +80,7 @@ We don't use AI as a generic chatbot gimmick. Every model performs a specialized
 ```mermaid
 flowchart LR
     subgraph Ingestion
-        W[WhatsApp Text] --> B[Baileys Bridge]
+        W[WhatsApp Text] --> B[Baileys Bridge / Webhook]
         V[Voice Note] --> E[ElevenLabs Scribe v2]
         E --> B
         M[Manual Input] --> B
@@ -85,8 +88,10 @@ flowchart LR
 
     subgraph AI Pipeline
         B --> G[Gemma 27B Extraction]
-        G --> J[JEV Verification Guard]
-        J --> P[Draft Proposal]
+        B --> J[JEV Intent Classification & Verification]
+        G --> J
+        J -->|Order Intent & Validated Draft| P[Draft Proposal & Auto-Reply]
+        J -->|Non-Order Chit-Chat| D[Auto-Dismissed from Queue]
     end
 
     subgraph Kitchen Desk
